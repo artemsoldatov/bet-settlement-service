@@ -1,0 +1,192 @@
+generator client {
+  provider = "prisma-client-js"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// --- reference / catalog ---------------------------------------------------
+
+enum AccountType {
+  USER_CASH // player's spendable balance
+  USER_UNSETTLED // funds frozen behind open bets
+  HOUSE // single house P&L account (unified: win payouts and lose takings)
+}
+
+enum MarketStatus {
+  OPEN
+  SUSPENDED
+  SETTLED
+  VOID
+}
+
+enum SelectionResult {
+  PENDING
+  WIN
+  LOSE
+  PUSH
+  VOID
+}
+
+enum BetStatus {
+  ACCEPTED
+  REJECTED
+  SETTLED
+  VOID
+}
+
+enum BetOutcome {
+  WIN
+  LOSE
+  PUSH
+  VOID
+}
+
+enum SettlementStatus {
+  APPLIED
+  REVERSED
+}
+
+enum TxType {
+  BET_PLACE
+  BET_SETTLE
+  BET_VOID
+}
+
+model Wallet {
+  id        String    @id @default(uuid())
+  userId    String    @map("user_id")
+  currency  String    @default("USD")
+  accounts  Account[]
+  bets      Bet[]
+  createdAt DateTime  @default(now()) @map("created_at")
+
+  @@unique([userId, currency])
+  @@map("wallets")
+}
+
+model Account {
+  id           String        @id @default(uuid())
+  walletId     String?       @map("wallet_id") // null for HOUSE accounts
+  wallet       Wallet?       @relation(fields: [walletId], references: [id])
+  type         AccountType
+  currency     String        @default("USD")
+  // denormalized for speed + optimistic locking; reconciled against ledger
+  balanceCents BigInt        @default(0) @map("balance_cents")
+  version      Int           @default(0)
+  entries      LedgerEntry[]
+  createdAt    DateTime      @default(now()) @map("created_at")
+
+  @@unique([walletId, type, currency])
+  @@index([type])
+  @@map("accounts")
+}
+
+model Market {
+  id          String       @id @default(uuid())
+  eventId     String       @map("event_id")
+  status      MarketStatus @default(OPEN)
+  selections  Selection[]
+  settlements Settlement[]
+  settledAt   DateTime?    @map("settled_at")
+  createdAt   DateTime     @default(now()) @map("created_at")
+
+  @@map("markets")
+}
+
+model Selection {
+  id       String          @id @default(uuid())
+  marketId String          @map("market_id")
+  market   Market          @relation(fields: [marketId], references: [id], onDelete: Cascade)
+  code     String
+  // odds as an exact fraction, never float
+  oddsNum  BigInt          @map("odds_num")
+  oddsDen  BigInt          @map("odds_den")
+  result   SelectionResult @default(PENDING)
+  bets     Bet[]
+
+  @@unique([marketId, code])
+  @@map("selections")
+}
+
+// --- bets & money ----------------------------------------------------------
+
+model Bet {
+  id             String      @id @default(uuid())
+  walletId       String      @map("wallet_id")
+  wallet         Wallet      @relation(fields: [walletId], references: [id])
+  selectionId    String      @map("selection_id")
+  selection      Selection   @relation(fields: [selectionId], references: [id])
+  stakeCents     BigInt      @map("stake_cents")
+  currency       String      @default("USD")
+  oddsNum        BigInt      @map("odds_num")
+  oddsDen        BigInt      @map("odds_den")
+  potentialCents BigInt      @map("potential_cents")
+  status         BetStatus   @default(ACCEPTED)
+  outcome        BetOutcome?
+  payoutCents    BigInt?     @map("payout_cents")
+  idempotencyKey String      @map("idempotency_key")
+  version        Int         @default(0)
+  settlement     Settlement?
+  placedAt       DateTime    @default(now()) @map("placed_at")
+  settledAt      DateTime?   @map("settled_at")
+
+  @@unique([walletId, idempotencyKey])
+  @@index([walletId, status])
+  @@map("bets")
+}
+
+// A transaction groups the ledger entries of one atomic money move. The unique
+// dedup_key is what makes settling a bet exactly-once: a second settle of the
+// same bet cannot insert its transaction row.
+model Transaction {
+  id        String        @id @default(uuid())
+  type      TxType
+  betId     String?       @map("bet_id")
+  dedupKey  String        @unique @map("dedup_key")
+  entries   LedgerEntry[]
+  createdAt DateTime      @default(now()) @map("created_at")
+
+  @@map("transactions")
+}
+
+// Immutable double-entry line. Insert-only; a reversal is new compensating
+// entries, never an update. The signed amounts of one transaction sum to zero.
+model LedgerEntry {
+  id            String      @id @default(uuid())
+  transactionId String      @map("transaction_id")
+  transaction   Transaction @relation(fields: [transactionId], references: [id], onDelete: Cascade)
+  accountId     String      @map("account_id")
+  account       Account     @relation(fields: [accountId], references: [id])
+  amountCents   BigInt      @map("amount_cents")
+  currency      String      @default("USD")
+  createdAt     DateTime    @default(now()) @map("created_at")
+
+  @@index([accountId])
+  @@map("ledger_entries")
+}
+
+model Settlement {
+  id          String           @id @default(uuid())
+  betId       String           @unique @map("bet_id")
+  bet         Bet              @relation(fields: [betId], references: [id], onDelete: Cascade)
+  marketId    String           @map("market_id")
+  market      Market           @relation(fields: [marketId], references: [id])
+  outcome     BetOutcome
+  payoutCents BigInt           @map("payout_cents")
+  status      SettlementStatus @default(APPLIED)
+  appliedAt   DateTime         @default(now()) @map("applied_at")
+
+  @@map("settlements")
+}
+
+// inbox for external events (market.settled); used by Phase B (Kafka)
+model ProcessedEvent {
+  eventId     String   @id @map("event_id")
+  processedAt DateTime @default(now()) @map("processed_at")
+
+  @@map("processed_events")
+}
