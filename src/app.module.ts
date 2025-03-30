@@ -1,6 +1,8 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
+import { BettingModule } from './betting/betting.module';
 import { validateEnv } from './config/env';
+import { PrismaModule } from './prisma/prisma.module';
 
 @Module({
   imports: [
@@ -9,6 +11,8 @@ import { validateEnv } from './config/env';
       validate: validateEnv,
       ignoreEnvFile: process.env.NODE_ENV === 'test',
     }),
+    PrismaModule,
+    BettingModule,
   ],
 })
 export class AppModule {}
