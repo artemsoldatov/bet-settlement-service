@@ -33,3 +33,45 @@ export function computePayout(
       return 0n;
   }
 }
+
+export interface SettleAccounts {
+  cashId: string;
+  unsettledId: string;
+  houseId: string;
+}
+
+export interface Line {
+  accountId: string;
+  amountCents: bigint;
+}
+
+/**
+ * The double-entry lines for settling a bet. Every case sums to zero and the
+ * house side is always the single HOUSE account, so house P&L is one SUM.
+ */
+export function settleLines(
+  outcome: BetOutcome,
+  stakeCents: bigint,
+  payoutCents: bigint,
+  acc: SettleAccounts,
+): Line[] {
+  switch (outcome) {
+    case BetOutcome.WIN:
+      return [
+        { accountId: acc.unsettledId, amountCents: -stakeCents },
+        { accountId: acc.cashId, amountCents: payoutCents },
+        { accountId: acc.houseId, amountCents: stakeCents - payoutCents },
+      ];
+    case BetOutcome.LOSE:
+      return [
+        { accountId: acc.unsettledId, amountCents: -stakeCents },
+        { accountId: acc.houseId, amountCents: stakeCents },
+      ];
+    case BetOutcome.PUSH:
+    case BetOutcome.VOID:
+      return [
+        { accountId: acc.unsettledId, amountCents: -stakeCents },
+        { accountId: acc.cashId, amountCents: stakeCents },
+      ];
+  }
+}
