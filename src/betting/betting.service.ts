@@ -1,7 +1,9 @@
 import { Injectable } from '@nestjs/common';
 import { Bet, BetStatus, Prisma } from '../generated/prisma';
 import { PrismaService } from '../prisma/prisma.service';
+import { InvalidBetStateError } from './errors';
 import { LedgerService } from './ledger.service';
+import { computePayout, outcomeFromResult, settleLines } from './settlement-math';
 
 export interface PlaceBetInput {
   walletId: string;
@@ -69,5 +71,73 @@ export class BettingService {
       }
       throw error;
     }
+  }
+
+  /**
+   * Settles a bet by its selection's result. Exactly-once at the money level:
+   * the unique settlement row (and the ledger dedup key) make a concurrent or
+   * retried settle a no-op, so the payout is booked once.
+   */
+  async settle(betId: string): Promise<Bet> {
+    return this.prisma.$transaction(async (tx) => {
+      const bet = await tx.bet.findUnique({
+        where: { id: betId },
+        include: { selection: true, wallet: { include: { accounts: true } } },
+      });
+      if (!bet) {
+        throw new InvalidBetStateError('Bet not found');
+      }
+      if (bet.status !== BetStatus.ACCEPTED) {
+        return bet; // already settled or void — idempotent no-op
+      }
+
+      const outcome = outcomeFromResult(bet.selection.result);
+      const payout = computePayout(outcome, bet.stakeCents, bet.oddsNum, bet.oddsDen);
+
+      try {
+        await tx.settlement.create({
+          data: { betId, marketId: bet.selection.marketId, outcome, payoutCents: payout },
+        });
+      } catch (error) {
+        if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
+          return bet; // already settled by a concurrent writer
+        }
+        throw error;
+      }
+
+      const cash = bet.wallet.accounts.find((a) => a.type === 'USER_CASH');
+      const unsettled = bet.wallet.accounts.find((a) => a.type === 'USER_UNSETTLED');
+      if (!cash || !unsettled) {
+        throw new InvalidBetStateError('Wallet is missing ledger accounts');
+      }
+      const house = await tx.account.findFirst({
+        where: { walletId: null, type: 'HOUSE', currency: bet.currency },
+      });
+      if (!house) {
+        throw new InvalidBetStateError('House account is not provisioned');
+      }
+
+      await this.ledger.post(tx, {
+        type: 'BET_SETTLE',
+        betId,
+        dedupKey: `settle:${betId}`,
+        currency: bet.currency,
+        lines: settleLines(outcome, bet.stakeCents, payout, {
+          cashId: cash.id,
+          unsettledId: unsettled.id,
+          houseId: house.id,
+        }),
+      });
+
+      return tx.bet.update({
+        where: { id: betId },
+        data: {
+          status: BetStatus.SETTLED,
+          outcome,
+          payoutCents: payout,
+          settledAt: new Date(),
+        },
+      });
+    });
   }
 }
