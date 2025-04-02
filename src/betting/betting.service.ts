@@ -53,7 +53,7 @@ export class BettingService {
           dedupKey: `place:${created.id}`,
           currency,
           lines: [
-            { accountId: input.cashId, amountCents: -input.stakeCents },
+            { accountId: input.cashId, amountCents: -input.stakeCents, floor: true },
             { accountId: input.unsettledId, amountCents: input.stakeCents },
           ],
         });

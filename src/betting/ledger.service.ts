@@ -1,9 +1,13 @@
 import { Injectable } from '@nestjs/common';
 import { Prisma, TxType } from '../generated/prisma';
+import { InsufficientFundsError } from './errors';
 
 export interface LedgerLine {
   accountId: string;
   amountCents: bigint;
+  // negative floored lines (a debit that must not overdraw) use a conditional
+  // update; a zero-row result means insufficient funds
+  floor?: boolean;
 }
 
 export interface PostParams {
@@ -51,10 +55,21 @@ export class LedgerService {
     }
 
     for (const line of params.lines) {
-      await tx.account.update({
-        where: { id: line.accountId },
-        data: { balanceCents: { increment: line.amountCents }, version: { increment: 1 } },
-      });
+      if (line.floor && line.amountCents < 0n) {
+        const debit = -line.amountCents;
+        const res = await tx.account.updateMany({
+          where: { id: line.accountId, balanceCents: { gte: debit } },
+          data: { balanceCents: { decrement: debit }, version: { increment: 1 } },
+        });
+        if (res.count === 0) {
+          throw new InsufficientFundsError();
+        }
+      } else {
+        await tx.account.update({
+          where: { id: line.accountId },
+          data: { balanceCents: { increment: line.amountCents }, version: { increment: 1 } },
+        });
+      }
     }
 
     return 'ok';
