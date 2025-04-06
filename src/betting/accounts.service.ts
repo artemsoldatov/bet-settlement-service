@@ -51,4 +51,37 @@ export class AccountsService {
     });
     return created.id;
   }
+
+  // test/support helper: fund a cash account through a real balanced transaction
+  async fundCash(accountId: string, amountCents: bigint, currency = 'USD'): Promise<void> {
+    const houseId = await this.ensureHouse(currency);
+    await this.prisma.$transaction(async (tx) => {
+      await tx.transaction.create({
+        data: {
+          type: 'BET_VOID', // reuse a type; deposits are out of scope for the demo
+          dedupKey: `deposit:${accountId}:${amountCents}:${Date.now()}`,
+          entries: {
+            create: [
+              { accountId, amountCents, currency },
+              { accountId: houseId, amountCents: -amountCents, currency },
+            ],
+          },
+        },
+      });
+      await tx.account.update({
+        where: { id: accountId },
+        data: { balanceCents: { increment: amountCents }, version: { increment: 1 } },
+      });
+      await tx.account.update({
+        where: { id: houseId },
+        data: { balanceCents: { increment: -amountCents }, version: { increment: 1 } },
+      });
+    });
+  }
+
+  balanceOf(accountId: string): Promise<bigint> {
+    return this.prisma.account
+      .findUniqueOrThrow({ where: { id: accountId } })
+      .then((a) => a.balanceCents);
+  }
 }
