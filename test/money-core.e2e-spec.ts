@@ -126,4 +126,57 @@ describe('money core (e2e)', () => {
     expect(await accounts.balanceOf(w.cashId)).toBe(40n);
     expect(await accounts.balanceOf(w.cashId)).toBeGreaterThanOrEqual(0n);
   });
+
+  it('keeps every ledger transaction balanced (zero-sum invariant)', async () => {
+    const w = await fundedWallet(10_000n);
+    // a mix of outcomes
+    for (const [odds, result] of [
+      [2n, SelectionResult.WIN],
+      [3n, SelectionResult.LOSE],
+      [2n, SelectionResult.PUSH],
+    ] as const) {
+      const selectionId = await selection(odds, 1n, result);
+      const bet = await betting.place({
+        walletId: w.walletId,
+        cashId: w.cashId,
+        unsettledId: w.unsettledId,
+        selectionId,
+        stakeCents: 300n,
+        oddsNum: odds,
+        oddsDen: 1n,
+        idempotencyKey: `k-${randomUUID()}`,
+      });
+      await betting.settle(bet.id);
+    }
+
+    const grouped = await prisma.ledgerEntry.groupBy({
+      by: ['transactionId'],
+      _sum: { amountCents: true },
+    });
+    expect(grouped.length).toBeGreaterThan(0);
+    for (const row of grouped) {
+      expect(row._sum.amountCents).toBe(0n);
+    }
+  });
+
+  it('keeps every account balance reconciled with its ledger entries', async () => {
+    const w = await fundedWallet(5_000n);
+    const selectionId = await selection(5n, 2n, SelectionResult.WIN);
+    const bet = await betting.place({
+      walletId: w.walletId,
+      cashId: w.cashId,
+      unsettledId: w.unsettledId,
+      selectionId,
+      stakeCents: 400n,
+      oddsNum: 5n,
+      oddsDen: 2n,
+      idempotencyKey: `k-${randomUUID()}`,
+    });
+    await betting.settle(bet.id);
+
+    const allAccounts = await prisma.account.findMany();
+    for (const account of allAccounts) {
+      expect(await accounts.isReconciled(account.id)).toBe(true);
+    }
+  });
 });

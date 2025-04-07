@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { AccountType } from '../generated/prisma';
+import { AccountType, Prisma } from '../generated/prisma';
 import { PrismaService } from '../prisma/prisma.service';
 
 export interface WalletAccounts {
@@ -84,4 +84,16 @@ export class AccountsService {
       .findUniqueOrThrow({ where: { id: accountId } })
       .then((a) => a.balanceCents);
   }
+
+  // reconciliation: the denormalized balance must equal the sum of its entries
+  async isReconciled(accountId: string): Promise<boolean> {
+    const account = await this.prisma.account.findUniqueOrThrow({ where: { id: accountId } });
+    const agg = await this.prisma.ledgerEntry.aggregate({
+      where: { accountId },
+      _sum: { amountCents: true },
+    });
+    return (agg._sum.amountCents ?? 0n) === account.balanceCents;
+  }
 }
+
+export type Tx = Prisma.TransactionClient;
