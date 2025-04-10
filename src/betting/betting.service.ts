@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { Bet, BetStatus, Prisma } from '../generated/prisma';
+import { AccountType, Bet, BetStatus, Prisma, SettlementStatus } from '../generated/prisma';
 import { PrismaService } from '../prisma/prisma.service';
 import { InvalidBetStateError } from './errors';
 import { LedgerService } from './ledger.service';
@@ -105,28 +105,13 @@ export class BettingService {
         throw error;
       }
 
-      const cash = bet.wallet.accounts.find((a) => a.type === 'USER_CASH');
-      const unsettled = bet.wallet.accounts.find((a) => a.type === 'USER_UNSETTLED');
-      if (!cash || !unsettled) {
-        throw new InvalidBetStateError('Wallet is missing ledger accounts');
-      }
-      const house = await tx.account.findFirst({
-        where: { walletId: null, type: 'HOUSE', currency: bet.currency },
-      });
-      if (!house) {
-        throw new InvalidBetStateError('House account is not provisioned');
-      }
-
+      const acc = await this.accountsOf(tx, bet);
       await this.ledger.post(tx, {
         type: 'BET_SETTLE',
         betId,
         dedupKey: `settle:${betId}`,
         currency: bet.currency,
-        lines: settleLines(outcome, bet.stakeCents, payout, {
-          cashId: cash.id,
-          unsettledId: unsettled.id,
-          houseId: house.id,
-        }),
+        lines: settleLines(outcome, bet.stakeCents, payout, acc),
       });
 
       return tx.bet.update({
@@ -139,5 +124,79 @@ export class BettingService {
         },
       });
     });
+  }
+
+  /**
+   * Reverses a settled bet with compensating entries (never an update to old
+   * rows), returning the money to the frozen state and marking the settlement
+   * REVERSED. The bet becomes ACCEPTED again, ready to be re-settled.
+   */
+  async voidSettled(betId: string): Promise<Bet> {
+    return this.prisma.$transaction(async (tx) => {
+      const bet = await tx.bet.findUnique({
+        where: { id: betId },
+        include: { settlement: true, wallet: { include: { accounts: true } } },
+      });
+      if (!bet) {
+        throw new InvalidBetStateError('Bet not found');
+      }
+      if (
+        bet.status !== BetStatus.SETTLED ||
+        !bet.settlement ||
+        bet.settlement.status !== SettlementStatus.APPLIED ||
+        bet.outcome === null ||
+        bet.payoutCents === null
+      ) {
+        return bet; // nothing to reverse
+      }
+
+      const acc = await this.accountsOf(tx, bet);
+      const reversal = settleLines(bet.outcome, bet.stakeCents, bet.payoutCents, acc).map((l) => ({
+        accountId: l.accountId,
+        amountCents: -l.amountCents,
+      }));
+
+      const result = await this.ledger.post(tx, {
+        type: 'BET_VOID',
+        betId,
+        dedupKey: `void:${betId}`,
+        currency: bet.currency,
+        lines: reversal,
+      });
+      if (result === 'duplicate') {
+        return bet;
+      }
+
+      await tx.settlement.update({
+        where: { betId },
+        data: { status: SettlementStatus.REVERSED },
+      });
+
+      return tx.bet.update({
+        where: { id: betId },
+        data: { status: BetStatus.ACCEPTED, outcome: null, payoutCents: null, settledAt: null },
+      });
+    });
+  }
+
+  private async accountsOf(
+    tx: Prisma.TransactionClient,
+    bet: {
+      currency: string;
+      wallet: { accounts: { id: string; type: AccountType }[] };
+    },
+  ): Promise<{ cashId: string; unsettledId: string; houseId: string }> {
+    const cash = bet.wallet.accounts.find((a) => a.type === AccountType.USER_CASH);
+    const unsettled = bet.wallet.accounts.find((a) => a.type === AccountType.USER_UNSETTLED);
+    if (!cash || !unsettled) {
+      throw new InvalidBetStateError('Wallet is missing ledger accounts');
+    }
+    const house = await tx.account.findFirst({
+      where: { walletId: null, type: AccountType.HOUSE, currency: bet.currency },
+    });
+    if (!house) {
+      throw new InvalidBetStateError('House account is not provisioned');
+    }
+    return { cashId: cash.id, unsettledId: unsettled.id, houseId: house.id };
   }
 }
