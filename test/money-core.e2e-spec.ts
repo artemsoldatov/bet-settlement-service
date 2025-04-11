@@ -179,4 +179,60 @@ describe('money core (e2e)', () => {
       expect(await accounts.isReconciled(account.id)).toBe(true);
     }
   });
+
+  it('reverses a settled bet with compensating entries, append-only', async () => {
+    const w = await fundedWallet(1_000n);
+    const selectionId = await selection(2n, 1n, SelectionResult.WIN);
+    const bet = await betting.place({
+      walletId: w.walletId,
+      cashId: w.cashId,
+      unsettledId: w.unsettledId,
+      selectionId,
+      stakeCents: 300n,
+      oddsNum: 2n,
+      oddsDen: 1n,
+      idempotencyKey: `k-${randomUUID()}`,
+    });
+    await betting.settle(bet.id); // win: cash 1000 -300 +600 = 1300
+    expect(await accounts.balanceOf(w.cashId)).toBe(1_300n);
+
+    const reversed = await betting.voidSettled(bet.id);
+    expect(reversed.status).toBe('ACCEPTED');
+
+    // money back to the post-place state: stake frozen, cash reduced by stake
+    expect(await accounts.balanceOf(w.cashId)).toBe(700n);
+    expect(await accounts.balanceOf(w.unsettledId)).toBe(300n);
+
+    const settlement = await prisma.settlement.findUniqueOrThrow({ where: { betId: bet.id } });
+    expect(settlement.status).toBe('REVERSED');
+
+    // ledger is append-only: both the settle and the reversal transactions exist
+    expect(await prisma.transaction.count({ where: { betId: bet.id } })).toBe(3); // place, settle, void
+    for (const account of await prisma.account.findMany()) {
+      expect(await accounts.isReconciled(account.id)).toBe(true);
+    }
+  });
+
+  it('books the payout once when settle is retried', async () => {
+    const w = await fundedWallet(1_000n);
+    const selectionId = await selection(2n, 1n, SelectionResult.WIN);
+    const bet = await betting.place({
+      walletId: w.walletId,
+      cashId: w.cashId,
+      unsettledId: w.unsettledId,
+      selectionId,
+      stakeCents: 250n,
+      oddsNum: 2n,
+      oddsDen: 1n,
+      idempotencyKey: `k-${randomUUID()}`,
+    });
+
+    await betting.settle(bet.id);
+    await betting.settle(bet.id); // retry
+    await betting.settle(bet.id); // retry
+
+    expect(await prisma.settlement.count({ where: { betId: bet.id } })).toBe(1);
+    // 1000 - 250 + 500 = 1250, exactly once
+    expect(await accounts.balanceOf(w.cashId)).toBe(1_250n);
+  });
 });
