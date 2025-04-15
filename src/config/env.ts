@@ -4,6 +4,8 @@ export const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
   PORT: z.coerce.number().int().positive().default(53001),
   DATABASE_URL: z.string().url(),
+  // comma-separated list of Kafka/Redpanda brokers
+  KAFKA_BROKERS: z.string().default('localhost:59092'),
 });
 
 export type Env = z.infer<typeof envSchema>;
