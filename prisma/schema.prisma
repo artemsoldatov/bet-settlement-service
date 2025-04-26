@@ -186,7 +186,23 @@ model Settlement {
 // inbox for external events (market.settled); used by Phase B (Kafka)
 model ProcessedEvent {
   eventId     String   @id @map("event_id")
+  consumer    String
   processedAt DateTime @default(now()) @map("processed_at")
 
   @@map("processed_events")
+}
+
+// transactional outbox: a domain event is written in the same transaction as
+// the state change, then relayed to Kafka by a poller (Phase B)
+model OutboxEvent {
+  id          String    @id @default(uuid())
+  topic       String
+  msgKey      String    @map("msg_key")
+  payload     Json
+  traceparent String?
+  createdAt   DateTime  @default(now()) @map("created_at")
+  publishedAt DateTime? @map("published_at")
+
+  @@index([publishedAt, createdAt])
+  @@map("outbox_events")
 }
