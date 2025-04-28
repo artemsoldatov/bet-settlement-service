@@ -5,6 +5,7 @@ import { validateEnv } from './config/env';
 import { HealthModule } from './health/health.module';
 import { KafkaModule } from './kafka/kafka.module';
 import { PrismaModule } from './prisma/prisma.module';
+import { SettlementFlowModule } from './settlement-flow/settlement-flow.module';
 
 @Module({
   imports: [
@@ -17,6 +18,7 @@ import { PrismaModule } from './prisma/prisma.module';
     KafkaModule,
     HealthModule,
     BettingModule,
+    SettlementFlowModule,
   ],
 })
 export class AppModule {}
