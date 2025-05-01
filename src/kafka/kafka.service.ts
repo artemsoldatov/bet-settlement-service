@@ -1,7 +1,8 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { Kafka, Producer } from 'kafkajs';
+import { Consumer, Kafka, Producer } from 'kafkajs';
 import type { Env } from '../config/env';
+import { ALL_TOPICS } from './topics';
 
 /**
  * Owns the Kafka (Redpanda) client. Connections are lazy — nothing talks to the
@@ -10,6 +11,7 @@ import type { Env } from '../config/env';
  */
 @Injectable()
 export class KafkaService {
+  private readonly logger = new Logger(KafkaService.name);
   private readonly kafka: Kafka;
   private producer?: Producer;
 
@@ -36,6 +38,23 @@ export class KafkaService {
       throw new Error('Kafka producer is not connected');
     }
     return this.producer;
+  }
+
+  createConsumer(groupId: string): Consumer {
+    return this.kafka.consumer({ groupId });
+  }
+
+  async ensureTopics(): Promise<void> {
+    const admin = this.kafka.admin();
+    await admin.connect();
+    try {
+      await admin.createTopics({
+        topics: ALL_TOPICS.map((topic) => ({ topic, numPartitions: 6 })),
+        waitForLeaders: true,
+      });
+    } finally {
+      await admin.disconnect();
+    }
   }
 
   async disconnect(): Promise<void> {
