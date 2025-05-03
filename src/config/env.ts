@@ -7,6 +7,7 @@ export const envSchema = z.object({
   // comma-separated list of Kafka/Redpanda brokers
   KAFKA_BROKERS: z.string().default('localhost:59092'),
   OUTBOX_POLL_MS: z.coerce.number().int().positive().default(500),
+  JOB_ATTEMPTS: z.coerce.number().int().positive().default(3),
 });
 
 export type Env = z.infer<typeof envSchema>;
