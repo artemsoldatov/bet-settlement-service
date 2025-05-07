@@ -4,6 +4,7 @@ import { AccountsService } from '../src/betting/accounts.service';
 import { BettingService } from '../src/betting/betting.service';
 import { SelectionResult } from '../src/generated/prisma/client';
 import { KafkaService } from '../src/kafka/kafka.service';
+import { TOPIC_MARKET_SETTLED } from '../src/kafka/topics';
 import { PrismaService } from '../src/prisma/prisma.service';
 import { MarketSettledConsumer } from '../src/settlement-flow/market-settled.consumer';
 import { MarketsService } from '../src/settlement-flow/markets.service';
@@ -98,6 +99,36 @@ describe('settlement flow (e2e, Kafka)', () => {
     });
     expect(settled.outcome).toBe('WIN');
     // 1000 - 200 stake + 400 payout = 1200
+    expect(await accounts.balanceOf(cashId)).toBe(1_200n);
+  });
+
+  it('handles a duplicated delivery exactly once (inbox)', async () => {
+    const { marketId, betId, cashId } = await marketWithBet(SelectionResult.WIN);
+    const eventId = `evt-dup-${randomUUID()}`;
+
+    // deliver the same event id twice, straight to the topic
+    const send = () =>
+      kafka.getProducer().send({
+        topic: TOPIC_MARKET_SETTLED,
+        messages: [
+          {
+            key: marketId,
+            value: JSON.stringify({ marketId }),
+            headers: { eventId, traceparent: '' },
+          },
+        ],
+      });
+    await send();
+    await send();
+
+    await until(async () => {
+      const bet = await prisma.bet.findUnique({ where: { id: betId } });
+      return bet?.status === 'SETTLED' ? bet : null;
+    });
+
+    expect(await prisma.settlement.count({ where: { betId } })).toBe(1);
+    expect(await prisma.processedEvent.count({ where: { eventId } })).toBe(1);
+    // payout booked once
     expect(await accounts.balanceOf(cashId)).toBe(1_200n);
   });
 });
