@@ -1,10 +1,11 @@
 import { randomUUID } from 'node:crypto';
 import type { TestingModule } from '@nestjs/testing';
+import type { Consumer } from 'kafkajs';
 import { AccountsService } from '../src/betting/accounts.service';
 import { BettingService } from '../src/betting/betting.service';
 import { SelectionResult } from '../src/generated/prisma/client';
 import { KafkaService } from '../src/kafka/kafka.service';
-import { TOPIC_MARKET_SETTLED } from '../src/kafka/topics';
+import { TOPIC_DLT, TOPIC_MARKET_SETTLED } from '../src/kafka/topics';
 import { PrismaService } from '../src/prisma/prisma.service';
 import { MarketSettledConsumer } from '../src/settlement-flow/market-settled.consumer';
 import { MarketsService } from '../src/settlement-flow/markets.service';
@@ -35,6 +36,8 @@ describe('settlement flow (e2e, Kafka)', () => {
   let relay: OutboxRelay;
   let consumer: MarketSettledConsumer;
   let kafka: KafkaService;
+  let dltCollector: Consumer;
+  const dltMessages: { eventId: string; marketId: string }[] = [];
 
   beforeAll(async () => {
     const { startKafkaStack } = await import('./helpers/kafka-stack');
@@ -54,10 +57,24 @@ describe('settlement flow (e2e, Kafka)', () => {
     await kafka.connectProducer();
     await kafka.ensureTopics();
     await consumer.start();
+
+    // a side consumer that collects dead-letters for assertions
+    dltCollector = kafka.createConsumer(`dlt-collector-${randomUUID()}`);
+    await dltCollector.connect();
+    await dltCollector.subscribe({ topic: TOPIC_DLT, fromBeginning: true });
+    await dltCollector.run({
+      eachMessage: ({ message }) => {
+        dltMessages.push(
+          JSON.parse(message.value?.toString() ?? '{}') as { eventId: string; marketId: string },
+        );
+        return Promise.resolve();
+      },
+    });
   }, 120_000);
 
   afterAll(async () => {
     await consumer.stop();
+    await dltCollector.disconnect();
     await kafka.disconnect();
     await app.close();
     const { stopKafkaStack } = await import('./helpers/kafka-stack');
@@ -130,5 +147,27 @@ describe('settlement flow (e2e, Kafka)', () => {
     expect(await prisma.processedEvent.count({ where: { eventId } })).toBe(1);
     // payout booked once
     expect(await accounts.balanceOf(cashId)).toBe(1_200n);
+  });
+
+  it('dead-letters a poison event after exhausting retries', async () => {
+    // selection stays PENDING → settle() throws → retries → DLT
+    const { marketId } = await marketWithBet(SelectionResult.PENDING);
+    const eventId = `evt-poison-${randomUUID()}`;
+
+    await kafka.getProducer().send({
+      topic: TOPIC_MARKET_SETTLED,
+      messages: [{ key: marketId, value: JSON.stringify({ marketId }), headers: { eventId } }],
+    });
+
+    const dead = await until(
+      async () =>
+        dltMessages.find((m) => m.eventId === eventId)
+          ? Promise.resolve(dltMessages.find((m) => m.eventId === eventId)!)
+          : null,
+      60_000,
+    );
+    expect(dead.marketId).toBe(marketId);
+    // never recorded as processed
+    expect(await prisma.processedEvent.count({ where: { eventId } })).toBe(0);
   });
 });
