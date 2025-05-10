@@ -4,6 +4,7 @@ import { BettingModule } from './betting/betting.module';
 import { validateEnv } from './config/env';
 import { HealthModule } from './health/health.module';
 import { KafkaModule } from './kafka/kafka.module';
+import { ObservabilityModule } from './observability/observability.module';
 import { PrismaModule } from './prisma/prisma.module';
 import { SettlementFlowModule } from './settlement-flow/settlement-flow.module';
 
@@ -16,6 +17,7 @@ import { SettlementFlowModule } from './settlement-flow/settlement-flow.module';
     }),
     PrismaModule,
     KafkaModule,
+    ObservabilityModule,
     HealthModule,
     BettingModule,
     SettlementFlowModule,
