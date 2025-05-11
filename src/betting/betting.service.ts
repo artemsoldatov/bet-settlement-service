@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { AccountType, Bet, BetStatus, Prisma, SettlementStatus } from '../generated/prisma';
+import { MetricsService } from '../observability/metrics.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { InvalidBetStateError } from './errors';
 import { LedgerService } from './ledger.service';
@@ -22,11 +23,13 @@ export class BettingService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly ledger: LedgerService,
+    private readonly metrics: MetricsService,
   ) {}
 
   /**
    * Places a bet: freeze the stake (cash → unsettled) and record the bet, all
-   * in one transaction. The bet's unique idempotency key makes a retry return
+   * in one transaction. The stake debit uses a floored conditional update so it
+   * can never overdraw; the bet's unique idempotency key makes a retry return
    * the original bet instead of placing a second one.
    */
   async place(input: PlaceBetInput): Promise<Bet> {
@@ -34,7 +37,7 @@ export class BettingService {
     const potential = (input.stakeCents * input.oddsNum) / input.oddsDen;
 
     try {
-      return await this.prisma.$transaction(async (tx) => {
+      const bet = await this.prisma.$transaction(async (tx) => {
         const created = await tx.bet.create({
           data: {
             walletId: input.walletId,
@@ -62,6 +65,8 @@ export class BettingService {
 
         return created;
       });
+      this.metrics.betsPlaced.inc();
+      return bet;
     } catch (error) {
       if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
         // a concurrent/retried place with the same key — return the winner
@@ -79,6 +84,15 @@ export class BettingService {
    * retried settle a no-op, so the payout is booked once.
    */
   async settle(betId: string): Promise<Bet> {
+    const stopTimer = this.metrics.settleDuration.startTimer();
+    try {
+      return await this.settleInner(betId);
+    } finally {
+      stopTimer();
+    }
+  }
+
+  private async settleInner(betId: string): Promise<Bet> {
     return this.prisma.$transaction(async (tx) => {
       const bet = await tx.bet.findUnique({
         where: { id: betId },
@@ -114,7 +128,7 @@ export class BettingService {
         lines: settleLines(outcome, bet.stakeCents, payout, acc),
       });
 
-      return tx.bet.update({
+      const updated = await tx.bet.update({
         where: { id: betId },
         data: {
           status: BetStatus.SETTLED,
@@ -123,6 +137,8 @@ export class BettingService {
           settledAt: new Date(),
         },
       });
+      this.metrics.betsSettled.inc({ outcome });
+      return updated;
     });
   }
 
