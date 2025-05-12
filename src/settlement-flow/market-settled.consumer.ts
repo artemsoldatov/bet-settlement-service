@@ -7,6 +7,7 @@ import { BetStatus, Prisma } from '../generated/prisma';
 import { KafkaService } from '../kafka/kafka.service';
 import { TOPIC_DLT, TOPIC_MARKET_SETTLED } from '../kafka/topics';
 import { traceIdOf } from '../kafka/trace';
+import { MetricsService } from '../observability/metrics.service';
 import { PrismaService } from '../prisma/prisma.service';
 
 /**
@@ -27,6 +28,7 @@ export class MarketSettledConsumer {
     private readonly kafka: KafkaService,
     private readonly prisma: PrismaService,
     private readonly betting: BettingService,
+    private readonly metrics: MetricsService,
     config: ConfigService<Env, true>,
   ) {
     this.maxAttempts = config.get('JOB_ATTEMPTS', { infer: true });
@@ -58,6 +60,7 @@ export class MarketSettledConsumer {
     // fast-path dedup; settle() is idempotent anyway, this skips re-work
     const seen = await this.prisma.processedEvent.findUnique({ where: { eventId } });
     if (seen) {
+      this.metrics.duplicatesSkipped.inc();
       return;
     }
 
@@ -108,6 +111,7 @@ export class MarketSettledConsumer {
     attempts: number,
   ): Promise<void> {
     this.logger.warn(`Dead-lettering event ${eventId} for market ${marketId} after ${attempts}`);
+    this.metrics.deadLettered.inc();
     await this.kafka.getProducer().send({
       topic: TOPIC_DLT,
       messages: [

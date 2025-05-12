@@ -25,6 +25,18 @@ export class MetricsService {
     registers: [this.registry],
   });
 
+  readonly deadLettered = new Counter({
+    name: 'events_dead_lettered_total',
+    help: 'Events sent to the dead-letter topic',
+    registers: [this.registry],
+  });
+
+  readonly duplicatesSkipped = new Counter({
+    name: 'events_duplicates_skipped_total',
+    help: 'Duplicate deliveries skipped by the inbox',
+    registers: [this.registry],
+  });
+
   constructor() {
     collectDefaultMetrics({ register: this.registry });
   }
