@@ -1,0 +1,53 @@
+{
+  "__note": "Import into Grafana with a Prometheus datasource scraping the service /metrics endpoint.",
+  "title": "Bet Settlement",
+  "schemaVersion": 39,
+  "editable": true,
+  "time": { "from": "now-15m", "to": "now" },
+  "refresh": "10s",
+  "panels": [
+    {
+      "id": 1,
+      "title": "Throughput (ops/s)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "targets": [
+        { "expr": "rate(bets_placed_total[1m])", "legendFormat": "placed" },
+        { "expr": "sum(rate(bets_settled_total[1m]))", "legendFormat": "settled" }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "Settle latency p99 (s)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.99, sum(rate(settle_duration_seconds_bucket[5m])) by (le))",
+          "legendFormat": "p99"
+        },
+        {
+          "expr": "histogram_quantile(0.50, sum(rate(settle_duration_seconds_bucket[5m])) by (le))",
+          "legendFormat": "p50"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "Settled by outcome",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "targets": [{ "expr": "rate(bets_settled_total[1m])", "legendFormat": "{{outcome}}" }]
+    },
+    {
+      "id": 4,
+      "title": "Reliability: dead-letters & duplicates skipped",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "targets": [
+        { "expr": "rate(events_dead_lettered_total[5m])", "legendFormat": "dead-lettered" },
+        { "expr": "rate(events_duplicates_skipped_total[5m])", "legendFormat": "duplicates skipped" }
+      ]
+    }
+  ]
+}
